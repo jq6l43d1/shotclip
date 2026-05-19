@@ -160,6 +160,28 @@ that includes [flameshot-org/flameshot#4664](https://github.com/flameshot-org/fl
 (non-empty `parent_window` to xdg-desktop-portal). At the time of writing,
 that fix is in `master` but not in any stable release.
 
+## Example: Pillow `ImageGrab.grabclipboard()`
+
+Since [python-pillow/Pillow#7094](https://github.com/python-pillow/Pillow/pull/7094)
+(merged 2023-05), Pillow's `ImageGrab.grabclipboard()` on Wayland calls
+`wl-paste -t image/png` when `image/png` is among the offered MIME types. For
+single-image `shotclip` copies, `image/png` is always offered alongside the
+file's detected content type, so a Python script can pick up a shotclip'd
+image directly:
+
+```bash
+shotclip ~/Pictures/Screenshots/test.png
+```
+
+```python
+from PIL import ImageGrab
+im = ImageGrab.grabclipboard()   # returns a PIL.Image of the screenshot
+im.save("/tmp/from-clipboard.png")
+```
+
+This gives you a `shotclip foo.png → Python` pipeline without temporary file
+juggling or shelling out to `wl-paste` yourself.
+
 ## Limitations
 
 - GNOME 50 / Mutter on Ubuntu 26.04 is the only environment this has been
