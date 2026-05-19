@@ -113,6 +113,20 @@ ls ~/Pictures/Screenshots/2026-05-19*.png | shotclip
 find ~/Documents -name '*.pdf' -newer /tmp/marker | shotclip
 ```
 
+With `--stdin-bytes`, raw binary data is read from stdin instead and saved
+to a tempfile in `$TMPDIR`. The MIME type is detected from the bytes; the
+tempfile gets a matching extension. The clipboard then references that
+tempfile path. Useful for piping from a tool that writes its output to
+stdout, e.g. Flameshot in raw mode:
+
+```bash
+flameshot gui -r | shotclip --stdin-bytes
+```
+
+The tempfile is intentionally left on disk so portal MIME types can still
+be resolved after shotclip exits. If you'd rather have a stable, predictable
+path, save to disk yourself first: `flameshot gui -p ~/Pictures/ ; shotclip <newest>`.
+
 ### Options
 
 | Flag | Behavior |
@@ -123,6 +137,7 @@ find ~/Documents -name '*.pdf' -newer /tmp/marker | shotclip
 | `-c, --clear` | Clear the clipboard (or primary selection with `-p`). Takes no FILE args. |
 | `-t, --type MIME` | Only advertise this single MIME type. Useful for `-t text/uri-list` to force a URI-only clipboard. |
 | `-s, --seat NAME` | Use the seat with this name (as advertised in `wl_seat.name`) instead of the first one. Only relevant on multi-seat systems. |
+| `--stdin-bytes` | Read raw bytes from stdin into a tempfile (with an extension matched to the detected MIME) and use it as the single source. Mutually exclusive with `FILE` args. |
 | `--no-image-data` | Don't offer the file's content-type bytes; URI/portal types only. |
 | `--keep-visible` | Don't destroy the focus window (debugging). |
 | `-h, --help` | Usage. |

@@ -66,6 +66,7 @@ typedef struct {
     int clear_only;
     int no_image_data;
     int keep_visible;
+    int stdin_bytes;            /* --stdin-bytes: read raw bytes from stdin */
     const char *force_type;     /* -t MIME; NULL = offer everything */
     const char *opt_seat;       /* -s NAME; NULL = first seat */
     file_t *files;
@@ -531,7 +532,8 @@ static void usage(FILE *f) {
 "bytes when a single file is given).\n"
 "\n"
 "If FILE is omitted and standard input is not a TTY, paths are read from\n"
-"stdin, one per line.\n"
+"stdin, one per line. With --stdin-bytes, raw bytes are read from stdin\n"
+"instead and saved to a tempfile in $TMPDIR.\n"
 "\n"
 "Options:\n"
 "  -p, --primary         Set the primary selection, not the regular clipboard\n"
@@ -540,6 +542,7 @@ static void usage(FILE *f) {
 "  -c, --clear           Clear the clipboard (no FILE args needed)\n"
 "  -t, --type MIME       Only advertise this single MIME type\n"
 "  -s, --seat NAME       Use the named seat instead of the first one\n"
+"      --stdin-bytes     Read raw bytes from stdin into a tempfile\n"
 "      --no-image-data   Don't offer the file's content-type bytes\n"
 "      --keep-visible    Don't destroy the focus window after set_selection\n"
 "  -h, --help            Show this help and exit\n"
@@ -556,10 +559,69 @@ static const struct option longopts[] = {
     { "seat",           required_argument, 0, 's' },
     { "no-image-data",  no_argument,       0,  1  },
     { "keep-visible",   no_argument,       0,  2  },
+    { "stdin-bytes",    no_argument,       0,  3  },
     { "help",           no_argument,       0, 'h' },
     { "version",        no_argument,       0, 'V' },
     { 0, 0, 0, 0 }
 };
+
+/* Map a MIME type to a sensible filename extension for the tempfile path
+ * that --stdin-bytes will put on the clipboard. */
+static const char *ext_for_mime(const char *mime) {
+    if (!mime) return ".bin";
+    if (strcmp(mime, "image/png") == 0)        return ".png";
+    if (strcmp(mime, "image/jpeg") == 0)       return ".jpg";
+    if (strcmp(mime, "image/gif") == 0)        return ".gif";
+    if (strcmp(mime, "image/webp") == 0)       return ".webp";
+    if (strcmp(mime, "image/svg+xml") == 0)    return ".svg";
+    if (strcmp(mime, "image/bmp") == 0)        return ".bmp";
+    if (strcmp(mime, "image/tiff") == 0)       return ".tif";
+    if (strcmp(mime, "application/pdf") == 0)  return ".pdf";
+    if (strcmp(mime, "text/plain") == 0)       return ".txt";
+    if (strcmp(mime, "text/html") == 0)        return ".html";
+    if (strcmp(mime, "application/json") == 0) return ".json";
+    return ".bin";
+}
+
+/* Slurp all of stdin into a tempfile in $TMPDIR, then treat that tempfile
+ * as the single source. MIME is detected from the content so the tempfile
+ * gets a sensible extension. The tempfile is intentionally left on disk —
+ * portal MIME types reference the file's fd and consumers may resolve
+ * them after we've exited. */
+static void read_bytes_from_stdin(ctx_t *c) {
+    GByteArray *buf = g_byte_array_new();
+    char chunk[8192];
+    ssize_t n;
+    while ((n = read(STDIN_FILENO, chunk, sizeof(chunk))) > 0)
+        g_byte_array_append(buf, (guint8 *)chunk, n);
+    if (n < 0) die("read stdin: %s", strerror(errno));
+    if (buf->len == 0) die("--stdin-bytes: no data on stdin");
+
+    gboolean certain = FALSE;
+    char *ctype = g_content_type_guess(NULL, buf->data, buf->len, &certain);
+    char *mime  = ctype ? g_content_type_get_mime_type(ctype) : NULL;
+    const char *ext = ext_for_mime(mime);
+
+    char *tmpl = g_strdup_printf("shotclip-XXXXXX%s", ext);
+    GError *err = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp(tmpl, &path, &err);
+    g_free(tmpl);
+    if (fd < 0) die("g_file_open_tmp: %s", err->message);
+    if (write_all(fd, buf->data, buf->len) < 0)
+        die("write tempfile %s: %s", path, strerror(errno));
+    close(fd);
+
+    g_byte_array_free(buf, TRUE);
+    g_free(ctype);
+    g_free(mime);
+
+    c->files = calloc(1, sizeof(file_t));
+    if (!c->files) die("out of memory");
+    c->n_files = 1;
+    file_init(&c->files[0], path);
+    g_free(path);
+}
 
 /* Read FILE paths from stdin (one per line, blanks skipped). Trailing
  * whitespace stripped. Returns dynamically allocated array. */
@@ -599,6 +661,7 @@ static void parse_args(ctx_t *c, int argc, char *argv[]) {
             case 's': c->opt_seat = optarg; break;
             case  1 : c->no_image_data = 1; break;
             case  2 : c->keep_visible = 1; break;
+            case  3 : c->stdin_bytes = 1; break;
             case 'h': usage(stdout); exit(0);
             case 'V': printf("shotclip %s\n", SHOTCLIP_VERSION); exit(0);
             default: usage(stderr); exit(2);
@@ -606,8 +669,13 @@ static void parse_args(ctx_t *c, int argc, char *argv[]) {
     }
     int n = argc - optind;
     if (c->clear_only && n > 0) die("--clear takes no FILE args");
+    if (c->stdin_bytes && c->clear_only) die("--stdin-bytes and --clear are mutually exclusive");
+    if (c->stdin_bytes && n > 0)         die("--stdin-bytes is incompatible with FILE args");
     if (c->clear_only) return;
-    if (n > 0) {
+    if (c->stdin_bytes) {
+        if (isatty(STDIN_FILENO)) die("--stdin-bytes requires stdin to be piped (not a TTY)");
+        read_bytes_from_stdin(c);
+    } else if (n > 0) {
         c->files = calloc(n, sizeof(file_t));
         if (!c->files) die("out of memory");
         c->n_files = n;
