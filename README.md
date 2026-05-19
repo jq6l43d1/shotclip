@@ -173,6 +173,42 @@ that fix is in `master` but not in any stable release.
   `shotclip` is running — but if you specifically need the portal types
   multiple times, run a second `shotclip` invocation.
 
+## Related and prior art
+
+[**bugaevc/wl-clipboard#71**](https://github.com/bugaevc/wl-clipboard/issues/71)
+— "wl-copy: how to craft a multi-mimetype copy" — open since 2019, still open
+in 2025. Users have repeatedly asked for `wl-copy` to advertise more than one
+MIME type, with use cases including pasting browser-grabbed images, restoring
+rich text in Confluence/Office round-trips, GIMP clipboard history, and —
+exactly what shotclip targets — *"copy file paths as `text/uri-list`, and
+paste them into file managers… I'd like to copy a version of absolute paths
+as `text/plain` too. That's what thunar does."* (@lilydjwg, 2021).
+
+The wl-clipboard maintainer's position there is that generic CLI-driven
+multi-MIME is too design-y for a small tool — every proposed flag syntax
+(`-t a,b`, `-C converter`, `--extra MIME <(…)`) brings open questions, and
+the real consumers are clipboard managers that should use libwayland
+directly. Fair.
+
+`shotclip` takes the **narrower, opinionated path** instead: it doesn't try
+to solve "arbitrary MIME N-tuples." It solves "I have one or more files, give
+me the clipboard a file manager would give me" — including the
+`application/vnd.portal.*` keys that didn't even come up in that thread but
+turn out to be the missing piece for pasting into modern GFile-aware apps
+like Claude Code on GNOME Wayland. Where wl-copy is a `cat`-for-clipboard,
+shotclip is a `cp`-to-clipboard.
+
+Other relevant tooling:
+
+- [`wl-clipboard`](https://github.com/bugaevc/wl-clipboard) (`wl-copy`/`wl-paste`)
+  — the upstream Wayland clipboard CLI. shotclip mimics its flag names and
+  fork-to-background default where they carry over.
+- [`xdg-desktop-portal`](https://github.com/flatpak/xdg-desktop-portal)
+  `org.freedesktop.portal.FileTransfer` and `org.freedesktop.portal.Documents`
+  — the D-Bus services whose keys end up in our portal MIME payloads.
+- Nautilus (`nautilus-clipboard.c`) — the reference implementation of the
+  exact MIME set we mimic.
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
