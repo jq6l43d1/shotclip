@@ -105,15 +105,24 @@ shotclip [OPTIONS] FILE [FILE ...]
 compositor cancels the selection. Pass multiple files to copy them as a set,
 the way file managers do.
 
+If `FILE` is omitted and standard input is not a TTY, paths are read from
+stdin, one per line — handy for piping `find`/`ls`/`fd` output:
+
+```bash
+ls ~/Pictures/Screenshots/2026-05-19*.png | shotclip
+find ~/Documents -name '*.pdf' -newer /tmp/marker | shotclip
+```
+
 ### Options
 
 | Flag | Behavior |
 |------|----------|
 | `-p, --primary` | Set the primary selection instead of the regular clipboard. |
-| `-o, --paste-once` | Exit after the first paste of a data MIME type. Good for screenshot workflows where you only need one paste. |
+| `-o, --paste-once` | Exit after the first paste of a data MIME type. Good for screenshot workflows where you only need one paste. Note: pasting into XWayland windows is known to break with this flag — same caveat as `wl-copy(1)`. |
 | `-f, --foreground` | Don't fork — stay attached to the terminal. |
 | `-c, --clear` | Clear the clipboard (or primary selection with `-p`). Takes no FILE args. |
 | `-t, --type MIME` | Only advertise this single MIME type. Useful for `-t text/uri-list` to force a URI-only clipboard. |
+| `-s, --seat NAME` | Use the seat with this name (as advertised in `wl_seat.name`) instead of the first one. Only relevant on multi-seat systems. |
 | `--no-image-data` | Don't offer the file's content-type bytes; URI/portal types only. |
 | `--keep-visible` | Don't destroy the focus window (debugging). |
 | `-h, --help` | Usage. |

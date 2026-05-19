@@ -53,6 +53,12 @@ typedef struct {
 } file_t;
 
 typedef struct {
+    struct wl_seat *seat;
+    char *name;             /* arrives via wl_seat.name */
+    uint32_t capabilities;  /* arrives via wl_seat.capabilities */
+} seat_info_t;
+
+typedef struct {
     /* CLI */
     int primary;
     int paste_once;
@@ -61,6 +67,7 @@ typedef struct {
     int no_image_data;
     int keep_visible;
     const char *force_type;     /* -t MIME; NULL = offer everything */
+    const char *opt_seat;       /* -s NAME; NULL = first seat */
     file_t *files;
     int n_files;
 
@@ -68,12 +75,13 @@ typedef struct {
     struct wl_display *display;
     struct wl_compositor *compositor;
     struct wl_shm *shm;
-    struct wl_seat *seat;
     struct wl_data_device_manager *ddm;
     struct zwp_primary_selection_device_manager_v1 *psdm;
     struct xdg_wm_base *wm_base;
 
-    /* Seat */
+    /* Seats: bind all, then pick. Chosen seat reused for keyboard + selection. */
+    GPtrArray *seats;       /* seat_info_t * */
+    struct wl_seat *seat;   /* chosen one */
     struct wl_keyboard *keyboard;
 
     /* Selection */
@@ -424,14 +432,17 @@ static const struct wl_keyboard_listener kb_listener = {
     .key = kb_key, .modifiers = kb_modifiers, .repeat_info = kb_repeat_info,
 };
 
+/* seat_listener stores capabilities + name on the seat_info_t we registered
+ * each seat with. Keyboard creation is deferred to main() so we can do it
+ * only for the chosen seat. */
 static void seat_caps(void *data, struct wl_seat *s, uint32_t caps) {
-    ctx_t *c = data;
-    if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !c->keyboard) {
-        c->keyboard = wl_seat_get_keyboard(s);
-        wl_keyboard_add_listener(c->keyboard, &kb_listener, c);
-    }
+    ((seat_info_t *)data)->capabilities = caps;
 }
-static void seat_name(void *d, struct wl_seat *s, const char *name) {}
+static void seat_name(void *data, struct wl_seat *s, const char *name) {
+    seat_info_t *info = data;
+    g_free(info->name);
+    info->name = g_strdup(name);
+}
 static const struct wl_seat_listener seat_listener = { .capabilities = seat_caps, .name = seat_name };
 
 /* =============================================================== */
@@ -445,8 +456,10 @@ static void reg_global(void *data, struct wl_registry *r, uint32_t name, const c
     } else if (!strcmp(iface, "wl_shm")) {
         c->shm = wl_registry_bind(r, name, &wl_shm_interface, 1);
     } else if (!strcmp(iface, "wl_seat")) {
-        c->seat = wl_registry_bind(r, name, &wl_seat_interface, version > 7 ? 7 : version);
-        wl_seat_add_listener(c->seat, &seat_listener, c);
+        seat_info_t *info = g_new0(seat_info_t, 1);
+        info->seat = wl_registry_bind(r, name, &wl_seat_interface, version > 7 ? 7 : version);
+        wl_seat_add_listener(info->seat, &seat_listener, info);
+        g_ptr_array_add(c->seats, info);
     } else if (!strcmp(iface, "wl_data_device_manager")) {
         c->ddm = wl_registry_bind(r, name, &wl_data_device_manager_interface, 3);
     } else if (!strcmp(iface, "xdg_wm_base")) {
@@ -517,12 +530,16 @@ static void usage(FILE *f) {
 "application/vnd.portal.* portal types, plus the file's content-type\n"
 "bytes when a single file is given).\n"
 "\n"
+"If FILE is omitted and standard input is not a TTY, paths are read from\n"
+"stdin, one per line.\n"
+"\n"
 "Options:\n"
 "  -p, --primary         Set the primary selection, not the regular clipboard\n"
 "  -o, --paste-once      Exit after the first paste of a data MIME type\n"
 "  -f, --foreground      Don't fork to background after set_selection\n"
 "  -c, --clear           Clear the clipboard (no FILE args needed)\n"
 "  -t, --type MIME       Only advertise this single MIME type\n"
+"  -s, --seat NAME       Use the named seat instead of the first one\n"
 "      --no-image-data   Don't offer the file's content-type bytes\n"
 "      --keep-visible    Don't destroy the focus window after set_selection\n"
 "  -h, --help            Show this help and exit\n"
@@ -536,6 +553,7 @@ static const struct option longopts[] = {
     { "foreground",     no_argument,       0, 'f' },
     { "clear",          no_argument,       0, 'c' },
     { "type",           required_argument, 0, 't' },
+    { "seat",           required_argument, 0, 's' },
     { "no-image-data",  no_argument,       0,  1  },
     { "keep-visible",   no_argument,       0,  2  },
     { "help",           no_argument,       0, 'h' },
@@ -543,15 +561,42 @@ static const struct option longopts[] = {
     { 0, 0, 0, 0 }
 };
 
+/* Read FILE paths from stdin (one per line, blanks skipped). Trailing
+ * whitespace stripped. Returns dynamically allocated array. */
+static void read_paths_from_stdin(ctx_t *c) {
+    size_t cap = 16, count = 0;
+    file_t *arr = calloc(cap, sizeof(file_t));
+    if (!arr) die("out of memory");
+    char *line = NULL;
+    size_t lcap = 0;
+    ssize_t llen;
+    while ((llen = getline(&line, &lcap, stdin)) != -1) {
+        while (llen > 0 && (line[llen-1] == '\n' || line[llen-1] == '\r' || line[llen-1] == ' ' || line[llen-1] == '\t'))
+            line[--llen] = '\0';
+        if (llen == 0) continue;
+        if (count == cap) {
+            cap *= 2;
+            arr = realloc(arr, cap * sizeof(file_t));
+            if (!arr) die("out of memory");
+        }
+        file_init(&arr[count++], line);
+    }
+    free(line);
+    if (count == 0) die("no file paths read from stdin");
+    c->files = arr;
+    c->n_files = (int)count;
+}
+
 static void parse_args(ctx_t *c, int argc, char *argv[]) {
     int ch;
-    while ((ch = getopt_long(argc, argv, "pofct:hV", longopts, NULL)) != -1) {
+    while ((ch = getopt_long(argc, argv, "pofct:s:hV", longopts, NULL)) != -1) {
         switch (ch) {
             case 'p': c->primary = 1; break;
             case 'o': c->paste_once = 1; break;
             case 'f': c->foreground = 1; break;
             case 'c': c->clear_only = 1; break;
             case 't': c->force_type = optarg; break;
+            case 's': c->opt_seat = optarg; break;
             case  1 : c->no_image_data = 1; break;
             case  2 : c->keep_visible = 1; break;
             case 'h': usage(stdout); exit(0);
@@ -560,13 +605,17 @@ static void parse_args(ctx_t *c, int argc, char *argv[]) {
         }
     }
     int n = argc - optind;
-    if (!c->clear_only && n <= 0) { usage(stderr); exit(2); }
-    if (c->clear_only && n > 0)   die("--clear takes no FILE args");
+    if (c->clear_only && n > 0) die("--clear takes no FILE args");
+    if (c->clear_only) return;
     if (n > 0) {
         c->files = calloc(n, sizeof(file_t));
         if (!c->files) die("out of memory");
         c->n_files = n;
         for (int i = 0; i < n; i++) file_init(&c->files[i], argv[optind + i]);
+    } else if (!isatty(STDIN_FILENO)) {
+        read_paths_from_stdin(c);
+    } else {
+        usage(stderr); exit(2);
     }
 }
 
@@ -633,10 +682,50 @@ static void clear_clipboard(ctx_t *c) {
     wl_display_roundtrip(c->display);
 }
 
+/* Pick the chosen seat based on --seat NAME (or first seat if not specified).
+ * Releases the unchosen ones. Creates the keyboard for the chosen seat. */
+static void select_seat(ctx_t *c) {
+    if (c->seats->len == 0) die("no seats available");
+
+    seat_info_t *chosen = NULL;
+    if (c->opt_seat) {
+        for (guint i = 0; i < c->seats->len; i++) {
+            seat_info_t *info = c->seats->pdata[i];
+            if (info->name && strcmp(info->name, c->opt_seat) == 0) { chosen = info; break; }
+        }
+        if (!chosen) die("seat \"%s\" not found", c->opt_seat);
+    } else {
+        chosen = c->seats->pdata[0];
+    }
+
+    c->seat = chosen->seat;
+    if (chosen->capabilities & WL_SEAT_CAPABILITY_KEYBOARD) {
+        c->keyboard = wl_seat_get_keyboard(c->seat);
+        wl_keyboard_add_listener(c->keyboard, &kb_listener, c);
+    } else {
+        die("seat \"%s\" has no keyboard capability — cannot obtain a serial",
+            chosen->name ? chosen->name : "(unnamed)");
+    }
+
+    /* Release the unchosen seats. */
+    for (guint i = 0; i < c->seats->len; i++) {
+        seat_info_t *info = c->seats->pdata[i];
+        if (info != chosen) {
+            if (wl_seat_get_version(info->seat) >= WL_SEAT_RELEASE_SINCE_VERSION)
+                wl_seat_release(info->seat);
+            else
+                wl_seat_destroy(info->seat);
+            g_free(info->name);
+            g_free(info);
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     if (argc > 0 && argv[0] && *argv[0]) prog = argv[0];
 
     ctx_t c = {0};
+    c.seats = g_ptr_array_new();
     parse_args(&c, argc, argv);
 
     /* D-Bus + portals: only needed when actually setting (not for --clear). */
@@ -659,10 +748,12 @@ int main(int argc, char *argv[]) {
     if (!c.display) die("wl_display_connect failed (is WAYLAND_DISPLAY set?)");
     struct wl_registry *reg = wl_display_get_registry(c.display);
     wl_registry_add_listener(reg, &reg_listener, &c);
-    wl_display_roundtrip(c.display);
-    wl_display_roundtrip(c.display);
-    if (!c.compositor || !c.shm || !c.seat || !c.ddm || !c.wm_base)
+    wl_display_roundtrip(c.display);  /* learn globals (incl. each wl_seat) */
+    wl_display_roundtrip(c.display);  /* receive seat.name + capabilities */
+    if (!c.compositor || !c.shm || !c.ddm || !c.wm_base)
         die("compositor is missing required Wayland globals");
+
+    select_seat(&c);
 
     /* Surface + keyboard.enter to harvest a valid serial. */
     create_surface(&c);
@@ -706,6 +797,14 @@ int main(int argc, char *argv[]) {
     free(c.files);
     g_free(c.ft_key);
     g_free(c.doc_key);
+    /* select_seat already freed unchosen seat_info_t entries; free the array shell + chosen info. */
+    if (c.seats) {
+        for (guint i = 0; i < c.seats->len; i++) {
+            seat_info_t *info = c.seats->pdata[i];
+            if (info && info->seat == c.seat) { g_free(info->name); g_free(info); }
+        }
+        g_ptr_array_free(c.seats, TRUE);
+    }
     if (c.bus) g_object_unref(c.bus);
     wl_display_disconnect(c.display);
     return 0;
