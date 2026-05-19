@@ -1,19 +1,19 @@
 # shotclip
 
-A small libwayland-direct tool that puts a file on the Wayland clipboard with
+A small libwayland-direct tool that puts files on the Wayland clipboard with
 the same MIME types Nautilus uses — including the `application/vnd.portal.*`
 types required by GFile-aware paste consumers like **Claude Code**.
 
 ```
-$ shotclip ~/Pictures/Screenshots/whatever.png &
+$ shotclip ~/Pictures/Screenshots/whatever.png
 $ wl-paste --list-types
+image/png
 application/vnd.portal.files
 application/vnd.portal.filetransfer
-text/uri-list
-x-special/gnome-copied-files
-text/plain;charset=utf-8
 text/plain
-image/png
+text/plain;charset=utf-8
+x-special/gnome-copied-files
+text/uri-list
 ```
 
 That's the same set Nautilus produces when you right-click → Copy a file. So
@@ -44,31 +44,30 @@ The actual problem is twofold:
    to mint them.
 2. `wl_data_device.set_selection` on Wayland is only honored when accompanied
    by a serial from a recent input event. GTK4's clipboard layer, when called
-   from a non-interactive activate handler, passes serial `0` and Mutter
-   silently discards the request — even though `wl_data_source.offer` for the
-   non-text MIME types fired correctly. wl-copy works because it talks to
-   libwayland directly, opens a hidden surface, and uses the
-   `wl_keyboard.enter` serial it receives once the surface gets focus.
+   from a non-interactive code path, passes serial `0` and Mutter silently
+   discards the request — even though `wl_data_source.offer` for the non-text
+   MIME types fired correctly. `wl-copy` works because it talks to libwayland
+   directly, opens a hidden surface, and uses the `wl_keyboard.enter` serial
+   it receives once the surface gets focus.
 
-`shotclip` does what wl-copy does for the serial trick, plus the portal
+`shotclip` does what `wl-copy` does for the serial trick, plus the portal
 D-Bus dance:
 
-1. Bind to `wl_compositor`, `wl_shm`, `wl_seat`, `wl_data_device_manager`, and
-   `xdg_wm_base` from the registry.
-2. Create a 1×1 transparent `xdg_toplevel` surface.
-3. Pre-call `org.freedesktop.portal.FileTransfer.StartTransfer` +
-   `AddFiles(fd)` and `org.freedesktop.portal.Documents.AddFull(fd)` over
-   D-Bus so the portal keys are ready before any paste request arrives.
-4. Wait for `wl_keyboard.enter`. Capture the serial.
-5. Create a `wl_data_source`, advertise all seven MIME types, and call
+1. Bind the standard Wayland globals plus `xdg_wm_base` and
+   (optionally) `zwp_primary_selection_device_manager_v1`.
+2. Pre-call `org.freedesktop.portal.FileTransfer.StartTransfer` + `AddFiles`
+   and `org.freedesktop.portal.Documents.AddFull` over D-Bus so the portal
+   keys are ready before any paste request arrives.
+3. Create a 1×1 `xdg_toplevel` surface, wait for `wl_keyboard.enter`,
+   capture the serial.
+4. Build a `wl_data_source`, advertise the full MIME set, call
    `wl_data_device.set_selection(source, captured_serial)`.
-6. Serve `wl_data_source.send` events: read the file for `image/png`, format
-   URIs for the text types, return the cached portal keys for the
-   `vnd.portal.*` types.
-
-The process stays alive serving paste requests until the compositor cancels
-the source (i.e. something else takes the clipboard) or you close the
-1×1 window.
+5. **Immediately destroy the surface**. `wl_data_source` lives on the
+   `wl_data_device` (per-seat), not on the surface, so the clipboard ownership
+   survives — and the focus window stops showing up in Alt-Tab.
+6. Serve `wl_data_source.send` events from the now-windowless process until
+   the compositor cancels the source (something else took the clipboard) or
+   `--paste-once` exit fires.
 
 ## Installation
 
@@ -97,20 +96,49 @@ and `Documents` (on GNOME this is `xdg-desktop-portal-gnome` plus
 
 ## Usage
 
-```bash
-shotclip /path/to/file
+```
+shotclip [OPTIONS] FILE [FILE ...]
 ```
 
-It backgrounds itself and serves the clipboard until something else takes
-over. A tiny 1×1 transparent window briefly appears (and may show up in your
-window list with the title "Copying to clipboard…") — that surface is what
-gives us the keyboard-enter serial. You can ignore it.
+`shotclip` forks to the background after `set_selection` succeeds (matching
+`wl-copy`'s default), and stays alive serving paste requests until the
+compositor cancels the selection. Pass multiple files to copy them as a set,
+the way file managers do.
+
+### Options
+
+| Flag | Behavior |
+|------|----------|
+| `-p, --primary` | Set the primary selection instead of the regular clipboard. |
+| `-o, --paste-once` | Exit after the first paste of a data MIME type. Good for screenshot workflows where you only need one paste. |
+| `-f, --foreground` | Don't fork — stay attached to the terminal. |
+| `-c, --clear` | Clear the clipboard (or primary selection with `-p`). Takes no FILE args. |
+| `-t, --type MIME` | Only advertise this single MIME type. Useful for `-t text/uri-list` to force a URI-only clipboard. |
+| `--no-image-data` | Don't offer the file's content-type bytes; URI/portal types only. |
+| `--keep-visible` | Don't destroy the focus window (debugging). |
+| `-h, --help` | Usage. |
+| `-V, --version` | Version. |
+
+### What gets advertised
+
+For a single file (e.g. `shotclip foo.png`):
+
+- the file's detected content type (`image/png`, `application/pdf`, …)
+- `text/uri-list` with one `file://` URI
+- `x-special/gnome-copied-files` (Nautilus convention)
+- `text/plain;charset=utf-8` + `text/plain` (the path)
+- `application/vnd.portal.filetransfer` + `application/vnd.portal.files` (portal handles)
+
+For multiple files (e.g. `shotclip a.png b.png`):
+
+- same set, but no content-type bytes (Nautilus does the same — bytes-of-one only makes sense for single files)
+- `text/uri-list` is multiline, `x-special/gnome-copied-files` includes all URIs, portal keys reference all files
 
 ## Example: Flameshot → Claude Code on GNOME Wayland
 
 `examples/shotclip-flameshot.sh` (installed as `~/.local/bin/shotclip-flameshot`)
 captures a screenshot with Flameshot, saves it to `~/Pictures/Screenshots/`,
-and then runs `shotclip` on the saved file:
+and then runs `shotclip --paste-once` on the saved file:
 
 1. Bind `~/.local/bin/shotclip-flameshot` to your `Print` key in
    **Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts**.
@@ -126,17 +154,16 @@ that fix is in `master` but not in any stable release.
 ## Limitations
 
 - GNOME 50 / Mutter on Ubuntu 26.04 is the only environment this has been
-  tested on. Should work on any compositor that supports `xdg-shell` and
-  `wl_data_device_manager`, but the portal types only matter on
-  xdg-desktop-portal-aware desktops.
-- The 1×1 surface flickers briefly. A more careful implementation could use
-  `xdg-foreign` or layer-shell, but Mutter doesn't expose layer-shell.
-- The portal `FileTransfer` session is configured with default
-  `autostop=true`, so the clipboard is single-use for portal receivers. After
-  one paste, subsequent portal-based pastes return nothing. The other MIME
-  types (`image/png`, `text/uri-list`, etc.) keep working as long as
-  `shotclip` is running.
+  tested on. Should work on any compositor that supports `xdg-shell`,
+  `wl_data_device_manager`, and survives the focus-window destroy trick.
+- The 1×1 focus window flashes briefly during `set_selection`. It then
+  destroys itself, so Alt-Tab is clean.
+- The portal `FileTransfer` session uses default `autostop=true`, so the
+  portal MIME types resolve only once. After that single paste, the other
+  MIME types (`image/png`, `text/uri-list`, etc.) keep working as long as
+  `shotclip` is running — but if you specifically need the portal types
+  multiple times, run a second `shotclip` invocation.
 
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+GPL-3.0-or-later. See [LICENSE](LICENSE).

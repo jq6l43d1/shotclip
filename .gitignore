@@ -1,4 +1,6 @@
 shotclip
 xdg-shell-client-protocol.h
 xdg-shell-protocol.c
+primary-selection-unstable-v1-client-protocol.h
+primary-selection-unstable-v1-protocol.c
 *.o
