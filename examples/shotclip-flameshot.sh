@@ -23,11 +23,21 @@ mkdir -p "$OUTDIR"
 systemd-run --user --scope --unit="app-gnome-org.flameshot.Flameshot-$(date +%s%N)" -- \
     flameshot gui -p "$OUTDIR"
 
-# After Flameshot exits, find the newest .png it just saved and put it on the
-# clipboard. --paste-once makes shotclip exit after the first paste, so we
-# don't leave a stale clipboard owner around if you take another screenshot.
+# After Flameshot exits, find the newest .png it just saved and put it on
+# the clipboard. shotclip forks to the background after set_selection, so
+# this returns quickly while the child keeps serving paste requests.
+#
+# We deliberately don't use --paste-once here: GNOME Shell's built-in
+# clipboard manager reads every advertised MIME type right after a new
+# selection appears, which would trigger paste-once on whatever type it
+# happens to fetch first — leaving only that single type on the clipboard
+# by the time the user actually pastes. Same caveat as wl-copy(1) -o.
 sleep 0.2
 LATEST=$(ls -t "$OUTDIR"/*.png 2>/dev/null | head -1)
 if [ -n "$LATEST" ] && [ -f "$LATEST" ]; then
-    shotclip --paste-once "$LATEST"
+    # Replace any previous shotclip session so taking screenshots in a row
+    # doesn't accumulate background processes (each new set_selection would
+    # cancel the previous anyway, but be explicit).
+    pkill -9 -x shotclip 2>/dev/null
+    shotclip "$LATEST"
 fi
