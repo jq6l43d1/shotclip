@@ -30,9 +30,12 @@ shotclip: shotclip.c $(GEN_SRCS) $(GEN_HDRS)
 install: shotclip
 	install -D -m 755 shotclip $(DESTDIR)$(PREFIX)/bin/shotclip
 	install -D -m 755 examples/shotclip-flameshot.sh $(DESTDIR)$(PREFIX)/bin/shotclip-flameshot
+	install -D -m 755 examples/shotclip-gnome-screenshot.py $(DESTDIR)$(PREFIX)/bin/shotclip-gnome-screenshot
 
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/shotclip $(DESTDIR)$(PREFIX)/bin/shotclip-flameshot
+	rm -f $(DESTDIR)$(PREFIX)/bin/shotclip \
+	      $(DESTDIR)$(PREFIX)/bin/shotclip-flameshot \
+	      $(DESTDIR)$(PREFIX)/bin/shotclip-gnome-screenshot
 
 clean:
 	rm -f shotclip $(GEN_HDRS) $(GEN_SRCS)

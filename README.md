@@ -175,6 +175,41 @@ that includes [flameshot-org/flameshot#4664](https://github.com/flameshot-org/fl
 (non-empty `parent_window` to xdg-desktop-portal). At the time of writing,
 that fix is in `master` but not in any stable release.
 
+## Example: GNOME's native Screenshot UI → Claude Code
+
+`examples/shotclip-gnome-screenshot.py` (installed as
+`~/.local/bin/shotclip-gnome-screenshot`) invokes the GNOME / xdg-desktop-portal
+Screenshot interface directly — same UI as the built-in Print key on stock
+GNOME — then runs `shotclip` on the saved file.
+
+It's the equivalent of:
+
+```bash
+gdbus call --session \
+    --dest org.freedesktop.portal.Desktop \
+    --object-path /org/freedesktop/portal/desktop \
+    --method org.freedesktop.portal.Screenshot.Screenshot \
+    "" "{'interactive': <true>, 'modal': <true>}"
+```
+
+followed by handing the resulting file to `shotclip`. The script does the
+`Response` signal handshake properly via `Gio.DBusConnection.signal_subscribe`
+(the gdbus one-liner just returns the request handle and the actual URI is
+delivered asynchronously, so a thin bash wrapper around `gdbus call` won't
+know where the screenshot landed).
+
+Wire it to your Print key the same way as the Flameshot example:
+
+1. Bind `/home/USER/.local/bin/shotclip-gnome-screenshot` to `Print` in
+   **Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts**.
+2. Press Print, use GNOME's screenshot UI to select a region (or window or
+   full screen), save it.
+3. The screenshot lands in `~/Pictures/Screenshots/` (wherever GNOME's portal
+   chooses) and on your clipboard with the full Nautilus MIME set.
+4. Paste into Claude Code with **Ctrl+Shift+V**.
+
+Requires `python3-gi` (preinstalled on most GNOME systems).
+
 ## Example: Pillow `ImageGrab.grabclipboard()`
 
 Since [python-pillow/Pillow#7094](https://github.com/python-pillow/Pillow/pull/7094)
