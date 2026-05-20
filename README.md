@@ -4,6 +4,33 @@ A small libwayland-direct tool that puts files on the Wayland clipboard with
 the same MIME types Nautilus uses — including the `application/vnd.portal.*`
 types required by GFile-aware paste consumers like **Claude Code**.
 
+### The problem
+
+GNOME's built-in Screenshot UI (the one behind the Print key on stock GNOME,
+or invocable directly via xdg-desktop-portal) puts only `image/png` on the
+Wayland clipboard:
+
+```
+$ gdbus call --session \
+    --dest org.freedesktop.portal.Desktop \
+    --object-path /org/freedesktop/portal/desktop \
+    --method org.freedesktop.portal.Screenshot.Screenshot \
+    "" "{'interactive': <true>, 'modal': <true>}"
+(objectpath '/org/freedesktop/portal/desktop/request/1_2119/t',)
+
+$ wl-paste --list-types
+image/png
+```
+
+Just `image/png` is enough for image editors, but it's not what apps like
+Claude Code, Slack, the file-upload widgets on most websites in Chromium-
+based browsers, or anything else built on GFile-style paste actually read.
+Those apps expect the same MIME types a file manager produces — including
+the portal types that reference the file by D-Bus handle rather than by
+opaque image bytes.
+
+### With shotclip
+
 ```
 $ shotclip ~/Pictures/Screenshots/whatever.png
 $ wl-paste --list-types
